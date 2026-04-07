@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(gsutil cp:*)",
+      "Bash(bash gcp/run_on_vm.sh)",
+      "Bash(bash gcp/build_and_push.sh)",
+      "Bash(uv lock:*)",
+      "Bash(gcloud logging:*)",
+      "Bash(docker system:*)",
+      "Bash(gcloud compute:*)",
+      "Bash(gsutil ls:*)",
+      "Bash(bash gcp/populate_model_cache.sh)",
+      "Bash(bash gcp/run_and_watch.sh)",
+      "Bash(source .env)",
+      "Bash(grep -v \"^2026.*$\")",
+      "Bash(python3 -c \":*)",
+      "Bash(bash gcp/run_generate.sh)",
+      "Bash(gcloud auth:*)",
+      "Bash(grep -v \"^\\\\s*$\")"
+    ]
+  }
+}

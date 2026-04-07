@@ -1,0 +1,38 @@
+# Ignore IDE files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Ignore Git history
+.git/
+
+# Ignore Python virtual environment
+.venv/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore logfiles
+*.log
+
+# Ignore temporary output directories
+out/
+temp/
+
+# Ignore local script files
+gcp/
+
+# Ignore root project files
+.gitignore
+.editorconfig
+.env
+.env.example
+LICENSE
+README.md
