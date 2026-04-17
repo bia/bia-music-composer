@@ -1,0 +1,6 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+google-cloud-storage>=2.18.0
+google-cloud-compute>=1.19.0
+python-dotenv>=1.0.0

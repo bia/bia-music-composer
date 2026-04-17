@@ -18,7 +18,10 @@
       "Bash(python3 -c \":*)",
       "Bash(bash gcp/run_generate.sh)",
       "Bash(gcloud auth:*)",
-      "Bash(grep -v \"^\\\\s*$\")"
+      "Bash(grep -v \"^\\\\s*$\")",
+      "Bash(gcloud projects:*)",
+      "Bash(gcloud storage:*)",
+      "Bash(pip install:*)"
     ]
   }
 }
