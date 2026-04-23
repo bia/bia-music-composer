@@ -21,7 +21,8 @@
       "Bash(grep -v \"^\\\\s*$\")",
       "Bash(gcloud projects:*)",
       "Bash(gcloud storage:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(python3 -c ' *)"
     ]
   }
 }

@@ -76,11 +76,23 @@ except ImportError:
 
 from heartlib import HeartMuLaGenPipeline  # noqa: E402
 from peft import PeftModel  # noqa: E402
-from transformers import WavLMModel, Wav2Vec2FeatureExtractor  # noqa: E402
+from transformers import AutoModel, Wav2Vec2FeatureExtractor  # noqa: E402
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-WAVLM_SR  = 16000
-WAVLM_DIM = 768    # wavlm-base; wavlm-large → 1024
+_ENCODER_SR_MAP = {
+    "microsoft/wavlm-base":      16000,
+    "microsoft/wavlm-base-plus": 16000,
+    "microsoft/wavlm-large":     16000,
+    "m-a-p/MERT-v1-95M":         24000,
+    "m-a-p/MERT-v1-330M":        24000,
+}
+_ENCODER_DIM_MAP = {
+    "microsoft/wavlm-base":       768,
+    "microsoft/wavlm-base-plus":  768,
+    "microsoft/wavlm-large":     1024,
+    "m-a-p/MERT-v1-95M":          768,
+    "m-a-p/MERT-v1-330M":        1024,
+}
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 GCS_BUCKET_NAME          = os.environ["GCS_BUCKET_NAME"]
@@ -90,7 +102,7 @@ RUN_MODE                 = os.getenv("RUN_MODE", "audio2audio")
 PAIRS_DIR                = Path(os.getenv("PAIRS_DIR", "./data/paired"))
 STYLE_TAGS               = os.getenv("STYLE_TAGS", "piano,ambient,reflective")
 NUM_PREFIX_TOKENS        = int(os.getenv("NUM_PREFIX_TOKENS", "32"))
-WAVLM_MODEL              = os.getenv("WAVLM_MODEL",           "microsoft/wavlm-base")
+WAVLM_MODEL              = os.getenv("WAVLM_MODEL",           "m-a-p/MERT-v1-95M")
 NUM_STEPS                = int(os.getenv("NUM_STEPS",         "100"))
 LEARNING_RATE            = float(os.getenv("LEARNING_RATE",   "1e-4"))
 BACKBONE_ALIGN           = os.getenv("BACKBONE_ALIGN", "false").lower() == "true"
@@ -103,6 +115,9 @@ GCS_MODEL_CACHE  = f"gs://{GCS_BUCKET_NAME}/model-cache"
 GCS_RUN_BASE     = (f"gs://{GCS_BUCKET_NAME}/{GCS_BUCKET_FOLDER_PREFIX}"
                     f"-{MODEL_SIZE}/{RUN_MODE}")
 GCS_ADAPTER_PATH = f"{GCS_RUN_BASE}/latest/adapter"
+
+WAVLM_DIM  = _ENCODER_DIM_MAP.get(WAVLM_MODEL, 768)
+WAVLM_SR   = _ENCODER_SR_MAP.get(WAVLM_MODEL, 24000)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE  = torch.bfloat16
@@ -138,7 +153,12 @@ class AudioConditioningModule(nn.Module):
         self.backbone_dim      = backbone_dim
 
         self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wavlm_model_id)
-        self.encoder = WavLMModel.from_pretrained(wavlm_model_id)
+        self.encoder = AutoModel.from_pretrained(wavlm_model_id, trust_remote_code=True)
+        # Zero out relative-position weights that transformers leaves randomly initialized
+        # when loading a mert_model via the WavLMModel fallback — these cause NaN features.
+        for name, param in self.encoder.named_parameters():
+            if 'gru_rel_pos' in name or 'rel_attn_embed' in name:
+                nn.init.zeros_(param)
         for param in self.encoder.parameters():
             param.requires_grad_(False)
 
@@ -160,17 +180,22 @@ class AudioConditioningModule(nn.Module):
                 return_tensors="pt",
             )
             features = self.encoder.cpu()(inputs["input_values"].cpu()).last_hidden_state
+            features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
             features = F.adaptive_avg_pool1d(
                 features.transpose(1, 2), self.num_prefix_tokens
             ).transpose(1, 2)  # (1, N, encoder_dim)
 
         return features  # CPU, no grad
 
+    def encode_from_features(self, features: torch.Tensor) -> torch.Tensor:
+        """Project pre-computed WavLM features → prefix. Gradient flows through projection + pos_embed."""
+        prefix = self.projection(features.to(DEVICE, DTYPE))
+        return prefix + self.pos_embed.to(DTYPE)  # (1, N, backbone_dim)
+
     def encode_with_grad(self, wav_path: Path) -> torch.Tensor:
         """Encode WAV → prefix, gradient flows through projection + pos_embed."""
         features = self._wavlm_features(wav_path)
-        prefix = self.projection(features.to(DEVICE, DTYPE))
-        return prefix + self.pos_embed.to(DTYPE)  # (1, N, backbone_dim)
+        return self.encode_from_features(features)
 
     def encode_no_grad(self, wav_path: Path) -> torch.Tensor:
         """Encode WAV → prefix with no gradient (used for target)."""
@@ -302,12 +327,16 @@ def phase1_prefix_alignment(
     )
     optimizer = torch.optim.AdamW(trainable, lr=LEARNING_RATE)
 
-    # Pre-compute target prefixes (WavLM + current projection, then detach permanently)
+    # Pre-compute WavLM features once — encoder is frozen so output is constant
     print("\n── Phase 1: prefix alignment ──────────────────────────────────────")
-    print("Pre-computing target prefixes from output WAVs…")
+    print("Pre-computing WavLM features for input and output WAVs…")
+    input_features  = [conditioning_module._wavlm_features(p["input"])  for p in pairs]
+    output_features = [conditioning_module._wavlm_features(p["output"]) for p in pairs]
+
     target_prefixes = []
-    for p in pairs:
-        tp = conditioning_module.encode_no_grad(p["output"])
+    for p, out_feats in zip(pairs, output_features):
+        with torch.no_grad():
+            tp = conditioning_module.encode_from_features(out_feats).detach()
         target_prefixes.append(tp)
         print(f"  {p['stem']} output prefix: {tuple(tp.shape)}")
 
@@ -316,8 +345,8 @@ def phase1_prefix_alignment(
         optimizer.zero_grad()
         total_loss = 0.0
 
-        for p, target_prefix in zip(pairs, target_prefixes):
-            input_prefix = conditioning_module.encode_with_grad(p["input"])
+        for in_feats, target_prefix in zip(input_features, target_prefixes):
+            input_prefix = conditioning_module.encode_from_features(in_feats)
             loss = F.mse_loss(input_prefix, target_prefix)
             loss.backward()
             total_loss += loss.item()
@@ -405,17 +434,24 @@ def phase2_backbone_alignment(
         mask = torch.tril(torch.ones(S, S, dtype=torch.bool, device=DEVICE)).unsqueeze(0)
         return pipe.mula.backbone(h, mask=mask)[:, :N]  # (1, N, D) — prefix positions only
 
+    # Pre-compute WavLM features and target hidden states once (all frozen)
+    print("Pre-computing WavLM features and target backbone hidden states…")
+    input_features  = [conditioning_module._wavlm_features(p["input"])  for p in pairs]
+    output_features = [conditioning_module._wavlm_features(p["output"]) for p in pairs]
+    target_hiddens  = []
+    for out_feats, h_text in zip(output_features, text_embeds_list):
+        with torch.no_grad():
+            target_prefix = conditioning_module.encode_from_features(out_feats).detach()
+            h_target = _backbone_prefix_hidden(target_prefix, h_text)
+        target_hiddens.append(h_target)
+
     print(f"Training for {BACKBONE_ALIGN_STEPS} steps…")
     for step in range(BACKBONE_ALIGN_STEPS):
         optimizer.zero_grad()
         total_loss = 0.0
 
-        for p, h_text in zip(pairs, text_embeds_list):
-            target_prefix = conditioning_module.encode_no_grad(p["output"])
-            with torch.no_grad():
-                h_target = _backbone_prefix_hidden(target_prefix, h_text)
-
-            input_prefix = conditioning_module.encode_with_grad(p["input"])
+        for in_feats, h_target, h_text in zip(input_features, target_hiddens, text_embeds_list):
+            input_prefix = conditioning_module.encode_from_features(in_feats)
             h_student = _backbone_prefix_hidden(input_prefix, h_text)
 
             loss = F.mse_loss(h_student, h_target)

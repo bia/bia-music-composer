@@ -39,6 +39,7 @@ _job: dict = {
     "tags_gcs": None,
     "outputs": [],       # list of GCS blob names
     "started_at": None,  # ISO timestamp — used to filter outputs from this run
+    "num_outputs": 1,    # how many outputs were requested
     "error": None,
 }
 _lock = threading.Lock()
@@ -170,7 +171,7 @@ def _launch_vm(
                 initialize_params=compute_v1.AttachedDiskInitializeParams(
                     source_image=(
                         "projects/deeplearning-platform-release/global/images/family/"
-                        "pytorch-2-7-cu128-ubuntu-2204-nvidia-570"
+                        "pytorch-2-9-cu129-ubuntu-2404-nvidia-580"
                     ),
                     disk_size_gb=100,
                 ),
@@ -204,6 +205,10 @@ def _launch_vm(
             ir.guest_accelerators[0].accelerator_type = f"zones/{zone}/acceleratorTypes/nvidia-l4"
 
             try:
+                try:
+                    instances.delete(project=project_id, zone=zone, instance=instance).result(timeout=60)
+                except Exception:
+                    pass
                 op = instances.insert(project=project_id, zone=zone, instance_resource=ir)
                 op.result(timeout=120)
                 with _lock:
@@ -247,6 +252,7 @@ async def generate(
             message="Launching GCP SPOT VM…",
             started_at=datetime.now(timezone.utc).isoformat(),
             outputs=[],
+            num_outputs=num_outputs,
         )
 
     threading.Thread(
@@ -290,17 +296,17 @@ async def status():
 
             if wavs:
                 outputs = sorted(b.name for b in wavs)
-                with _lock:
-                    _job.update(
-                        outputs=outputs,
-                        status="complete",
-                        message=f"Done — {len(outputs)} output(s) ready.",
-                    )
-                current.update(
-                    outputs=outputs,
-                    status="complete",
-                    message=f"Done — {len(outputs)} output(s) ready.",
+                expected = current.get("num_outputs", 1)
+                done = len(outputs) >= expected
+                new_status = "complete" if done else current["status"]
+                new_msg = (
+                    f"Done — {len(outputs)} output(s) ready."
+                    if done
+                    else f"Generating… {len(outputs)}/{expected} output(s) ready."
                 )
+                with _lock:
+                    _job.update(outputs=outputs, status=new_status, message=new_msg)
+                current.update(outputs=outputs, status=new_status, message=new_msg)
         except Exception:
             pass  # Don't fail a status check
 

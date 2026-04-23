@@ -70,7 +70,7 @@ LEARNING_RATE            = float(os.getenv("LEARNING_RATE", "5e-5"))
 LORA_RANK                = int(os.getenv("LORA_RANK",     "16"))
 MAX_AUDIO_MS             = int(os.getenv("MAX_AUDIO_MS",  "30000"))
 LORA_ALPHA               = LORA_RANK * 2
-WAVLM_MODEL              = os.getenv("WAVLM_MODEL",           "microsoft/wavlm-base")
+WAVLM_MODEL              = os.getenv("WAVLM_MODEL",           "m-a-p/MERT-v1-95M")
 NUM_PREFIX_TOKENS        = int(os.getenv("NUM_PREFIX_TOKENS", "32"))
 
 CKPT_DIR           = Path("./ckpt")
@@ -94,8 +94,18 @@ _WAVLM_DIM_MAP = {
     "microsoft/wavlm-base":       768,
     "microsoft/wavlm-base-plus":  768,
     "microsoft/wavlm-large":     1024,
+    "m-a-p/MERT-v1-95M":          768,
+    "m-a-p/MERT-v1-330M":        1024,
 }
-WAVLM_DIM = _WAVLM_DIM_MAP.get(WAVLM_MODEL, 768)
+_ENCODER_SR_MAP = {
+    "microsoft/wavlm-base":      16000,
+    "microsoft/wavlm-base-plus": 16000,
+    "microsoft/wavlm-large":     16000,
+    "m-a-p/MERT-v1-95M":         24000,
+    "m-a-p/MERT-v1-330M":        24000,
+}
+WAVLM_DIM    = _WAVLM_DIM_MAP.get(WAVLM_MODEL, 768)
+ENCODER_SR   = _ENCODER_SR_MAP.get(WAVLM_MODEL, 24000)
 
 print(f"\nDevice          : {DEVICE}")
 print(f"Model           : HeartMuLa-oss-{MODEL_SIZE}")
@@ -115,12 +125,14 @@ class AudioConditioningModule(nn.Module):
         self.pos_emb = nn.Embedding(num_prefix_tokens, backbone_dim)
         nn.init.xavier_uniform_(self.proj.weight)
         nn.init.zeros_(self.proj.bias)
+        # persistent=False: excluded from state_dict so existing checkpoints stay compatible
+        self.register_buffer('_pos_idx', torch.arange(num_prefix_tokens), persistent=False)
 
     def forward(self, wavlm_features: torch.Tensor) -> torch.Tensor:
         # wavlm_features: (1, T, wavlm_dim)
         x = self.pool(wavlm_features.transpose(1, 2)).transpose(1, 2)  # (1, P, wavlm_dim)
         x = self.proj(x)                                                 # (1, P, backbone_dim)
-        pos = self.pos_emb(torch.arange(self.num_prefix_tokens, device=x.device))
+        pos = self.pos_emb(self._pos_idx)
         return (x + pos.unsqueeze(0)).to(DTYPE)                          # (1, P, backbone_dim)
 
 
@@ -225,9 +237,14 @@ def download_checkpoints() -> None:
 # ── 2. Load WavLM (frozen) ─────────────────────────────────────────────────────
 
 def load_wavlm():
-    from transformers import WavLMModel
-    print(f"Loading WavLM: {WAVLM_MODEL} (on CPU to preserve GPU VRAM)…")
-    wavlm = WavLMModel.from_pretrained(WAVLM_MODEL)
+    from transformers import AutoModel
+    print(f"Loading audio encoder: {WAVLM_MODEL} (on CPU to preserve GPU VRAM)…")
+    wavlm = AutoModel.from_pretrained(WAVLM_MODEL, trust_remote_code=True)
+    # Zero out relative-position weights that transformers leaves randomly initialized
+    # when loading a mert_model via the WavLMModel fallback — these cause NaN features.
+    for name, param in wavlm.named_parameters():
+        if 'gru_rel_pos' in name or 'rel_attn_embed' in name:
+            nn.init.zeros_(param)
     wavlm.eval()
     for p in wavlm.parameters():
         p.requires_grad_(False)
@@ -266,12 +283,13 @@ def extract_wavlm_features(wavlm, wav_path: Path) -> torch.Tensor:
     waveform, sr = torchaudio.load(str(wav_path))
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
-    if sr != 16000:
-        waveform = torchaudio.functional.resample(waveform, sr, 16000)
-    # Run WavLM on CPU; features stored on CPU and moved to GPU only during training
+    if sr != ENCODER_SR:
+        waveform = torchaudio.functional.resample(waveform, sr, ENCODER_SR)
+    # Run encoder on CPU; features stored on CPU and moved to GPU only during training
     with torch.no_grad():
         out = wavlm(waveform.cpu())
-    return out.last_hidden_state.cpu()  # (1, T_frames, wavlm_dim)
+    features = out.last_hidden_state.cpu()  # (1, T_frames, wavlm_dim)
+    return torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 # ── 6. Discover audio pairs ────────────────────────────────────────────────────
@@ -634,18 +652,21 @@ def train_loop_v2(mula, prefix_backbone: PrefixBackbone, cond_module: AudioCondi
     mula.train()
     cond_module.train()
 
+    # Pre-compute training sequences once — they are identical across all epochs
+    precomputed_seqs = [
+        build_training_sequence(s["prompt_tokens"], s["audio_codes"])
+        for s in samples
+    ]
+
     for epoch in range(start_epoch, NUM_EPOCHS):
         epoch_loss = 0.0
         optimizer.zero_grad()
 
-        for sample in samples:
+        for sample, (tokens, mask, T_input) in zip(samples, precomputed_seqs):
             features = sample["wavlm_features"].to(DEVICE)
             prefix   = cond_module(features)  # differentiable: (1, P, D)
             prefix_backbone.set_prefix(prefix)
 
-            tokens, mask, T_input = build_training_sequence(
-                sample["prompt_tokens"], sample["audio_codes"]
-            )
             loss = compute_loss(mula, tokens, mask, T_input)
             (loss / len(samples)).backward()
             epoch_loss += loss.item()

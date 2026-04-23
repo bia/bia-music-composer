@@ -65,7 +65,7 @@ NUM_OUTPUTS              = int(os.getenv("NUM_OUTPUTS",        "3"))
 MAX_AUDIO_MS             = int(os.getenv("MAX_AUDIO_MS",       "30000"))
 TEMPERATURE              = float(os.getenv("TEMPERATURE",      "1.0"))
 CFG_SCALE                = float(os.getenv("CFG_SCALE",        "3.0"))
-WAVLM_MODEL              = os.getenv("WAVLM_MODEL",            "microsoft/wavlm-base")
+WAVLM_MODEL              = os.getenv("WAVLM_MODEL",            "m-a-p/MERT-v1-95M")
 NUM_PREFIX_TOKENS        = int(os.getenv("NUM_PREFIX_TOKENS",  "32"))
 
 CKPT_DIR = Path("./ckpt")
@@ -84,8 +84,18 @@ _WAVLM_DIM_MAP = {
     "microsoft/wavlm-base":       768,
     "microsoft/wavlm-base-plus":  768,
     "microsoft/wavlm-large":     1024,
+    "m-a-p/MERT-v1-95M":          768,
+    "m-a-p/MERT-v1-330M":        1024,
 }
-WAVLM_DIM = _WAVLM_DIM_MAP.get(WAVLM_MODEL, 768)
+_ENCODER_SR_MAP = {
+    "microsoft/wavlm-base":      16000,
+    "microsoft/wavlm-base-plus": 16000,
+    "microsoft/wavlm-large":     16000,
+    "m-a-p/MERT-v1-95M":         24000,
+    "m-a-p/MERT-v1-330M":        24000,
+}
+WAVLM_DIM  = _WAVLM_DIM_MAP.get(WAVLM_MODEL, 768)
+ENCODER_SR = _ENCODER_SR_MAP.get(WAVLM_MODEL, 24000)
 
 print(f"\nDevice          : {DEVICE}")
 print(f"Model           : HeartMuLa-oss-{MODEL_SIZE}  +  LoRA from {GCS_ADAPTER_PATH}")
@@ -113,12 +123,14 @@ class AudioConditioningModule(nn.Module):
         self.pos_emb = nn.Embedding(num_prefix_tokens, backbone_dim)
         nn.init.xavier_uniform_(self.proj.weight)
         nn.init.zeros_(self.proj.bias)
+        # persistent=False: excluded from state_dict so existing checkpoints stay compatible
+        self.register_buffer('_pos_idx', torch.arange(num_prefix_tokens), persistent=False)
 
     def forward(self, wavlm_features: torch.Tensor) -> torch.Tensor:
         # wavlm_features: (1, T, wavlm_dim)
         x = self.pool(wavlm_features.transpose(1, 2)).transpose(1, 2)  # (1, P, wavlm_dim)
         x = self.proj(x)                                                 # (1, P, backbone_dim)
-        pos = self.pos_emb(torch.arange(self.num_prefix_tokens, device=x.device))
+        pos = self.pos_emb(self._pos_idx)
         return (x + pos.unsqueeze(0)).to(DTYPE)                          # (1, P, backbone_dim)
 
 
@@ -203,9 +215,14 @@ def download_checkpoints() -> None:
 # ── 2. Load WavLM (frozen) ─────────────────────────────────────────────────────
 
 def load_wavlm():
-    from transformers import WavLMModel
-    print(f"Loading WavLM: {WAVLM_MODEL}…")
-    wavlm = WavLMModel.from_pretrained(WAVLM_MODEL)
+    from transformers import AutoModel
+    print(f"Loading audio encoder: {WAVLM_MODEL}…")
+    wavlm = AutoModel.from_pretrained(WAVLM_MODEL, trust_remote_code=True)
+    # Zero out relative-position weights that transformers leaves randomly initialized
+    # when loading a mert_model via the WavLMModel fallback — these cause NaN features.
+    for name, param in wavlm.named_parameters():
+        if 'gru_rel_pos' in name or 'rel_attn_embed' in name:
+            nn.init.zeros_(param)
     wavlm.eval()
     for p in wavlm.parameters():
         p.requires_grad_(False)
@@ -280,13 +297,14 @@ def extract_wavlm_features(wavlm, wav_path: str) -> torch.Tensor:
     waveform, sr = torchaudio.load(wav_path)
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
-    if sr != 16000:
-        waveform = torchaudio.functional.resample(waveform, sr, 16000)
+    if sr != ENCODER_SR:
+        waveform = torchaudio.functional.resample(waveform, sr, ENCODER_SR)
     waveform = waveform.to(DEVICE)  # (1, T)
     with torch.no_grad():
         out = wavlm(waveform)
-    features = out.last_hidden_state  # (1, T_frames, wavlm_dim)
-    print(f"  WavLM: {features.shape[1]} frames from {waveform.shape[1] / 16000:.1f}s audio")
+    features = out.last_hidden_state  # (1, T_frames, encoder_dim)
+    features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+    print(f"  Encoder: {features.shape[1]} frames from {waveform.shape[1] / ENCODER_SR:.1f}s audio")
     return features
 
 

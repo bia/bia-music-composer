@@ -13,8 +13,8 @@
     --border:    #2a2a30;
     --accent:    #8b5cf6;
     --accent-hi: #a78bfa;
-    --text:      #e8e8ee;
-    --muted:     #666676;
+    --text:      #f2f2f7;
+    --muted:     #9898aa;
     --success:   #34d399;
     --error:     #f87171;
     --warn:      #fbbf24;
@@ -464,9 +464,7 @@ function renderOutputs(blobNames) {
       <div class="output-name">${shortName}</div>
       <audio controls preload="metadata" src="${url}"></audio>
       <div class="output-actions">
-        <a href="${dlUrl}" download="${shortName}">
-          <button class="btn-sm">⬇ Download</button>
-        </a>
+        <a class="btn-sm" href="${dlUrl}" download="${shortName}">⬇ Download</a>
       </div>
     `;
     outputList.appendChild(item);

@@ -17,7 +17,7 @@ NUM_EPOCHS=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/NUM_EPOCHS" || echo "
 LORA_RANK=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/LORA_RANK" || echo "16")
 LEARNING_RATE=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/LEARNING_RATE" || echo "5e-5")
 MAX_AUDIO_MS=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/MAX_AUDIO_MS" || echo "30000")
-WAVLM_MODEL=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/WAVLM_MODEL" || echo "microsoft/wavlm-base")
+WAVLM_MODEL=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/WAVLM_MODEL" || echo "m-a-p/MERT-v1-95M")
 NUM_PREFIX_TOKENS=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/NUM_PREFIX_TOKENS" || echo "32")
 
 echo "--- Ensuring Docker is available ---"

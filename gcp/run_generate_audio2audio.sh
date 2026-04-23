@@ -40,7 +40,7 @@ for zone in "${ZONES[@]}"; do
         --maintenance-policy=TERMINATE \
         --provisioning-model=STANDARD \
         --boot-disk-size=100GB \
-        --image-family=pytorch-2-7-cu128-ubuntu-2204-nvidia-570 \
+        --image-family=pytorch-2-9-cu129-ubuntu-2404-nvidia-580 \
         --image-project=deeplearning-platform-release \
         --scopes=cloud-platform \
         --metadata=GCS_BUCKET_NAME=${GCS_BUCKET_NAME},GCS_BUCKET_FOLDER_PREFIX=${GCS_BUCKET_FOLDER_PREFIX},MODEL_SIZE=${MODEL_SIZE_LOWER},RUN_MODE=${RUN_MODE},NUM_OUTPUTS=${NUM_OUTPUTS:-3},MAX_AUDIO_MS=${MAX_AUDIO_MS:-30000},TEMPERATURE=${TEMPERATURE:-1.0},CFG_SCALE=${CFG_SCALE:-3.0},DOCKER_IMAGE=${DOCKER_IMAGE},INPUT_WAV=${INPUT_WAV},GCS_TAGS_FILE=${GCS_TAGS_FILE:-},WAVLM_MODEL=${WAVLM_MODEL:-microsoft/wavlm-base},NUM_PREFIX_TOKENS=${NUM_PREFIX_TOKENS:-32} \

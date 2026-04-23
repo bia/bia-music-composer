@@ -54,7 +54,7 @@ for zone in "${ZONES[@]}"; do
         --machine-type=g2-standard-8 \
         --boot-disk-size=200GB \
         --accelerator=type=nvidia-l4,count=1 \
-        --image-family=pytorch-2-7-cu128-ubuntu-2204-nvidia-570 \
+        --image-family=pytorch-2-9-cu129-ubuntu-2404-nvidia-580 \
         --image-project=deeplearning-platform-release \
         --maintenance-policy=TERMINATE \
         --provisioning-model=STANDARD \
