@@ -19,7 +19,7 @@ TEMPERATURE=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/TEMPERATURE")
 CFG_SCALE=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/CFG_SCALE")
 DOCKER_IMAGE=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/DOCKER_IMAGE")
 GCS_TAGS_FILE=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/GCS_TAGS_FILE" || echo "")
-WAVLM_MODEL=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/WAVLM_MODEL" || echo "microsoft/wavlm-base")
+AUDIO_ENCODER_MODEL=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/AUDIO_ENCODER_MODEL" || echo "microsoft/wavlm-base")
 NUM_PREFIX_TOKENS=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/NUM_PREFIX_TOKENS" || echo "32")
 
 echo "--- Installing Docker ---"
@@ -51,7 +51,7 @@ docker run --rm --gpus all --ipc=host \
     -e TEMPERATURE="$TEMPERATURE" \
     -e CFG_SCALE="$CFG_SCALE" \
     -e GCS_TAGS_FILE="$GCS_TAGS_FILE" \
-    -e WAVLM_MODEL="$WAVLM_MODEL" \
+    -e AUDIO_ENCODER_MODEL="$AUDIO_ENCODER_MODEL" \
     -e NUM_PREFIX_TOKENS="$NUM_PREFIX_TOKENS" \
     -e TOKENIZERS_PARALLELISM=false \
     -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \

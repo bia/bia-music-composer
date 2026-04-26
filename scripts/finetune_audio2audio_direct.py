@@ -47,7 +47,7 @@ Environment variables
   PAIRS_DIR                      (default: ./data/paired)
   STYLE_TAGS                     (default: piano,ambient,reflective)
   NUM_PREFIX_TOKENS              (default: 32)
-  WAVLM_MODEL                    (default: microsoft/wavlm-base)
+  AUDIO_ENCODER_MODEL                    (default: microsoft/wavlm-base)
   NUM_STEPS                      Gradient steps per pair  (default: 100)
   LEARNING_RATE                  (default: 1e-4)
   BACKBONE_ALIGN                 Run phase-2 backbone alignment (default: false)
@@ -102,7 +102,7 @@ RUN_MODE                 = os.getenv("RUN_MODE", "audio2audio")
 PAIRS_DIR                = Path(os.getenv("PAIRS_DIR", "./data/paired"))
 STYLE_TAGS               = os.getenv("STYLE_TAGS", "piano,ambient,reflective")
 NUM_PREFIX_TOKENS        = int(os.getenv("NUM_PREFIX_TOKENS", "32"))
-WAVLM_MODEL              = os.getenv("WAVLM_MODEL",           "m-a-p/MERT-v1-95M")
+AUDIO_ENCODER_MODEL              = os.getenv("AUDIO_ENCODER_MODEL",           "m-a-p/MERT-v1-95M")
 NUM_STEPS                = int(os.getenv("NUM_STEPS",         "100"))
 LEARNING_RATE            = float(os.getenv("LEARNING_RATE",   "1e-4"))
 BACKBONE_ALIGN           = os.getenv("BACKBONE_ALIGN", "false").lower() == "true"
@@ -116,15 +116,15 @@ GCS_RUN_BASE     = (f"gs://{GCS_BUCKET_NAME}/{GCS_BUCKET_FOLDER_PREFIX}"
                     f"-{MODEL_SIZE}/{RUN_MODE}")
 GCS_ADAPTER_PATH = f"{GCS_RUN_BASE}/latest/adapter"
 
-WAVLM_DIM  = _ENCODER_DIM_MAP.get(WAVLM_MODEL, 768)
-WAVLM_SR   = _ENCODER_SR_MAP.get(WAVLM_MODEL, 24000)
+ENCODER_DIM  = _ENCODER_DIM_MAP.get(AUDIO_ENCODER_MODEL, 768)
+WAVLM_SR   = _ENCODER_SR_MAP.get(AUDIO_ENCODER_MODEL, 24000)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE  = torch.bfloat16
 
 print(f"\nDevice  : {DEVICE}")
 print(f"Model   : HeartMuLa-oss-{MODEL_SIZE}")
-print(f"WavLM   : {WAVLM_MODEL}")
+print(f"Encoder : {AUDIO_ENCODER_MODEL}")
 print(f"Steps   : {NUM_STEPS}  lr={LEARNING_RATE}  backbone_align={BACKBONE_ALIGN}\n")
 
 
@@ -145,8 +145,8 @@ class AudioConditioningModule(nn.Module):
         self,
         backbone_dim: int,
         num_prefix_tokens: int = NUM_PREFIX_TOKENS,
-        wavlm_model_id: str = WAVLM_MODEL,
-        encoder_dim: int = WAVLM_DIM,
+        wavlm_model_id: str = AUDIO_ENCODER_MODEL,
+        encoder_dim: int = ENCODER_DIM,
     ) -> None:
         super().__init__()
         self.num_prefix_tokens = num_prefix_tokens

@@ -19,7 +19,7 @@ Environment variables (all from .env):
     MAX_AUDIO_MS        Max clip length in ms         (default: 30000)
     TEMPERATURE         Sampling temperature          (default: 1.0)
     CFG_SCALE           Classifier-free guidance      (default: 3.0)
-    WAVLM_MODEL         WavLM HF model id             (default: microsoft/wavlm-base)
+    AUDIO_ENCODER_MODEL         WavLM HF model id             (default: microsoft/wavlm-base)
     NUM_PREFIX_TOKENS   Conditioning prefix length    (default: 32)
 """
 
@@ -65,7 +65,7 @@ NUM_OUTPUTS              = int(os.getenv("NUM_OUTPUTS",        "3"))
 MAX_AUDIO_MS             = int(os.getenv("MAX_AUDIO_MS",       "30000"))
 TEMPERATURE              = float(os.getenv("TEMPERATURE",      "1.0"))
 CFG_SCALE                = float(os.getenv("CFG_SCALE",        "3.0"))
-WAVLM_MODEL              = os.getenv("WAVLM_MODEL",            "m-a-p/MERT-v1-95M")
+AUDIO_ENCODER_MODEL              = os.getenv("AUDIO_ENCODER_MODEL",            "m-a-p/MERT-v1-95M")
 NUM_PREFIX_TOKENS        = int(os.getenv("NUM_PREFIX_TOKENS",  "32"))
 
 CKPT_DIR = Path("./ckpt")
@@ -80,7 +80,7 @@ GCS_OUTPUT_PATH  = f"{GCS_RUN_BASE}/latest/generated"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE  = torch.bfloat16
 
-_WAVLM_DIM_MAP = {
+_ENCODER_DIM_MAP = {
     "microsoft/wavlm-base":       768,
     "microsoft/wavlm-base-plus":  768,
     "microsoft/wavlm-large":     1024,
@@ -94,13 +94,13 @@ _ENCODER_SR_MAP = {
     "m-a-p/MERT-v1-95M":         24000,
     "m-a-p/MERT-v1-330M":        24000,
 }
-WAVLM_DIM  = _WAVLM_DIM_MAP.get(WAVLM_MODEL, 768)
-ENCODER_SR = _ENCODER_SR_MAP.get(WAVLM_MODEL, 24000)
+ENCODER_DIM  = _ENCODER_DIM_MAP.get(AUDIO_ENCODER_MODEL, 768)
+ENCODER_SR = _ENCODER_SR_MAP.get(AUDIO_ENCODER_MODEL, 24000)
 
 print(f"\nDevice          : {DEVICE}")
 print(f"Model           : HeartMuLa-oss-{MODEL_SIZE}  +  LoRA from {GCS_ADAPTER_PATH}")
 print(f"Input           : {INPUT_WAV or '(none)'}")
-print(f"WavLM           : {WAVLM_MODEL}  ({WAVLM_DIM}d)  →  {NUM_PREFIX_TOKENS} prefix tokens")
+print(f"Audio encoder   : {AUDIO_ENCODER_MODEL}  ({ENCODER_DIM}d)  →  {NUM_PREFIX_TOKENS} prefix tokens")
 print(f"Output          : {NUM_OUTPUTS} clips  max={MAX_AUDIO_MS}ms  temp={TEMPERATURE}  cfg={CFG_SCALE}\n")
 
 
@@ -216,8 +216,8 @@ def download_checkpoints() -> None:
 
 def load_wavlm():
     from transformers import AutoModel
-    print(f"Loading audio encoder: {WAVLM_MODEL}…")
-    wavlm = AutoModel.from_pretrained(WAVLM_MODEL, trust_remote_code=True)
+    print(f"Loading audio encoder: {AUDIO_ENCODER_MODEL}…")
+    wavlm = AutoModel.from_pretrained(AUDIO_ENCODER_MODEL, trust_remote_code=True)
     # Zero out relative-position weights that transformers leaves randomly initialized
     # when loading a mert_model via the WavLMModel fallback — these cause NaN features.
     for name, param in wavlm.named_parameters():
@@ -267,7 +267,7 @@ def load_conditioning_module(pipe: HeartMuLaGenPipeline) -> AudioConditioningMod
     backbone_dim = _detect_backbone_dim(pipe)
     print(f"Backbone dim   : {backbone_dim}")
 
-    module = AudioConditioningModule(WAVLM_DIM, backbone_dim, NUM_PREFIX_TOKENS).to(DEVICE)
+    module = AudioConditioningModule(ENCODER_DIM, backbone_dim, NUM_PREFIX_TOKENS).to(DEVICE)
     local_cond   = CKPT_DIR / "audio_conditioning"
     weights_file = local_cond / "module.pt"
 

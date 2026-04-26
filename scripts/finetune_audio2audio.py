@@ -24,7 +24,7 @@ Optional env vars:
     LEARNING_RATE              (default: 5e-5)
     LORA_RANK                  (default: 16)
     MAX_AUDIO_MS               (default: 30000)
-    WAVLM_MODEL                (default: microsoft/wavlm-base)
+    AUDIO_ENCODER_MODEL                (default: microsoft/wavlm-base)
     NUM_PREFIX_TOKENS          (default: 32)
 """
 
@@ -70,8 +70,9 @@ LEARNING_RATE            = float(os.getenv("LEARNING_RATE", "5e-5"))
 LORA_RANK                = int(os.getenv("LORA_RANK",     "16"))
 MAX_AUDIO_MS             = int(os.getenv("MAX_AUDIO_MS",  "30000"))
 LORA_ALPHA               = LORA_RANK * 2
-WAVLM_MODEL              = os.getenv("WAVLM_MODEL",           "m-a-p/MERT-v1-95M")
-NUM_PREFIX_TOKENS        = int(os.getenv("NUM_PREFIX_TOKENS", "32"))
+AUDIO_ENCODER_MODEL              = os.getenv("AUDIO_ENCODER_MODEL",           "m-a-p/MERT-v1-95M")
+NUM_PREFIX_TOKENS        = int(os.getenv("NUM_PREFIX_TOKENS", "64"))
+MELODIC_LOSS_WEIGHT      = float(os.getenv("MELODIC_LOSS_WEIGHT", "0.1"))
 
 CKPT_DIR           = Path("./ckpt")
 OUTPUT_ADAPTER_DIR = Path("./out/adapters/audio2audio")
@@ -90,7 +91,7 @@ EPOCH_CKPT_GCS    = f"{_GCS_CKPT_BASE}/epoch.txt"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE  = torch.bfloat16
 
-_WAVLM_DIM_MAP = {
+_ENCODER_DIM_MAP = {
     "microsoft/wavlm-base":       768,
     "microsoft/wavlm-base-plus":  768,
     "microsoft/wavlm-large":     1024,
@@ -104,12 +105,12 @@ _ENCODER_SR_MAP = {
     "m-a-p/MERT-v1-95M":         24000,
     "m-a-p/MERT-v1-330M":        24000,
 }
-WAVLM_DIM    = _WAVLM_DIM_MAP.get(WAVLM_MODEL, 768)
-ENCODER_SR   = _ENCODER_SR_MAP.get(WAVLM_MODEL, 24000)
+ENCODER_DIM    = _ENCODER_DIM_MAP.get(AUDIO_ENCODER_MODEL, 768)
+ENCODER_SR   = _ENCODER_SR_MAP.get(AUDIO_ENCODER_MODEL, 24000)
 
 print(f"\nDevice          : {DEVICE}")
 print(f"Model           : HeartMuLa-oss-{MODEL_SIZE}")
-print(f"WavLM           : {WAVLM_MODEL}  ({WAVLM_DIM}d)  →  {NUM_PREFIX_TOKENS} prefix tokens")
+print(f"Audio encoder   : {AUDIO_ENCODER_MODEL}  ({ENCODER_DIM}d)  →  {NUM_PREFIX_TOKENS} prefix tokens")
 print(f"Train           : audio2audio  {NUM_EPOCHS} epochs  lr={LEARNING_RATE}  LoRA rank={LORA_RANK}")
 print(f"Data            : {PAIRED_DATA_DIR}\n")
 
@@ -238,8 +239,8 @@ def download_checkpoints() -> None:
 
 def load_wavlm():
     from transformers import AutoModel
-    print(f"Loading audio encoder: {WAVLM_MODEL} (on CPU to preserve GPU VRAM)…")
-    wavlm = AutoModel.from_pretrained(WAVLM_MODEL, trust_remote_code=True)
+    print(f"Loading audio encoder: {AUDIO_ENCODER_MODEL} on CPU (preserving GPU VRAM)…")
+    wavlm = AutoModel.from_pretrained(AUDIO_ENCODER_MODEL, trust_remote_code=True)
     # Zero out relative-position weights that transformers leaves randomly initialized
     # when loading a mert_model via the WavLMModel fallback — these cause NaN features.
     for name, param in wavlm.named_parameters():
@@ -461,7 +462,7 @@ def setup_model(mula, backbone_dim: int) -> tuple:
     mula._peft_model = peft_model
     peft_model.print_trainable_parameters()
 
-    cond_module = AudioConditioningModule(WAVLM_DIM, backbone_dim, NUM_PREFIX_TOKENS).to(DEVICE)
+    cond_module = AudioConditioningModule(ENCODER_DIM, backbone_dim, NUM_PREFIX_TOKENS).to(DEVICE)
     return prefix_backbone, cond_module
 
 
@@ -583,7 +584,8 @@ def build_samples_with_features(pipe, wavlm_features_cache: dict, pairs: list) -
     for i, pair in enumerate(pairs):
         print(f"  Pair {i + 1}/{len(pairs)}: {pair['input'].name} → {pair['output'].name}", flush=True)
 
-        wavlm_features = wavlm_features_cache[str(pair["input"])]  # already on CPU
+        wavlm_features  = wavlm_features_cache[str(pair["input"])]   # already on CPU
+        output_features = wavlm_features_cache.get(str(pair["output"]))  # for melodic loss
 
         tmp = Path("./data/tmp")
         tmp.mkdir(parents=True, exist_ok=True)
@@ -616,11 +618,14 @@ def build_samples_with_features(pipe, wavlm_features_cache: dict, pairs: list) -
         audio_codes = model_outputs["frames"]
         print(f"{audio_codes.shape[1]} frames ({audio_codes.shape[1] / CODEC_FPS:.1f} s)")
 
-        samples.append({
+        sample = {
             "wavlm_features": wavlm_features.cpu(),
             "prompt_tokens":  model_inputs["tokens"].cpu(),
             "audio_codes":    audio_codes.cpu(),
-        })
+        }
+        if output_features is not None:
+            sample["output_features"] = output_features.cpu()
+        samples.append(sample)
     return samples
 
 
@@ -667,9 +672,18 @@ def train_loop_v2(mula, prefix_backbone: PrefixBackbone, cond_module: AudioCondi
             prefix   = cond_module(features)  # differentiable: (1, P, D)
             prefix_backbone.set_prefix(prefix)
 
-            loss = compute_loss(mula, tokens, mask, T_input)
+            ce_loss = compute_loss(mula, tokens, mask, T_input)
+            loss = ce_loss
+
+            if MELODIC_LOSS_WEIGHT > 0 and "output_features" in sample:
+                output_features = sample["output_features"].to(DEVICE)
+                with torch.no_grad():
+                    target_prefix = cond_module(output_features).detach()
+                melodic_loss = F.mse_loss(prefix, target_prefix)
+                loss = ce_loss + MELODIC_LOSS_WEIGHT * melodic_loss
+
             (loss / len(samples)).backward()
-            epoch_loss += loss.item()
+            epoch_loss += ce_loss.item()
 
         torch.nn.utils.clip_grad_norm_(trainable, max_norm=1.0)
         optimizer.step()
@@ -721,14 +735,16 @@ def save_outputs(mula, cond_module: AudioConditioningModule) -> None:
 def main() -> None:
     download_checkpoints()
 
-    # Phase 1: encode all input WAVs with WavLM on CPU before loading HeartMuLa
+    # Phase 1: encode all input + output WAVs with WavLM on CPU before loading HeartMuLa
     wavlm = load_wavlm()
-    print("\nPre-encoding all input WAVs with WavLM (CPU)…")
+    print("\nPre-encoding all audio WAVs with WavLM (CPU)…")
     pairs = discover_audio_pairs()
     wavlm_features_cache = {}
     for pair in pairs:
         print(f"  WavLM encode: {pair['input'].name}")
         wavlm_features_cache[str(pair["input"])] = extract_wavlm_features(wavlm, pair["input"])
+        print(f"  WavLM encode: {pair['output'].name} (output)")
+        wavlm_features_cache[str(pair["output"])] = extract_wavlm_features(wavlm, pair["output"])
     del wavlm
     torch.cuda.empty_cache()
     print("WavLM encoding done; VRAM freed.\n")

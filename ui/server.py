@@ -127,7 +127,7 @@ def _launch_vm(
         model_size   = _cfg("MODEL_SIZE", "3b").lower()
         run_mode     = _cfg("RUN_MODE", "test")
         docker_image = _cfg("DOCKER_IMAGE")
-        wavlm_model  = _cfg("WAVLM_MODEL", "microsoft/wavlm-base")
+        audio_encoder_model  = _cfg("AUDIO_ENCODER_MODEL", "microsoft/wavlm-base")
         num_prefix   = _cfg("NUM_PREFIX_TOKENS", "32")
         max_audio_ms = _cfg("MAX_AUDIO_MS", "30000")
         vm_zone      = _cfg("VM_ZONE", "europe-west1-b")
@@ -158,7 +158,7 @@ def _launch_vm(
             compute_v1.Items(key="TEMPERATURE",                value=str(temperature)),
             compute_v1.Items(key="CFG_SCALE",                  value=str(cfg_scale)),
             compute_v1.Items(key="DOCKER_IMAGE",               value=docker_image),
-            compute_v1.Items(key="WAVLM_MODEL",                value=wavlm_model),
+            compute_v1.Items(key="AUDIO_ENCODER_MODEL",                value=audio_encoder_model),
             compute_v1.Items(key="NUM_PREFIX_TOKENS",          value=num_prefix),
         ]
 
