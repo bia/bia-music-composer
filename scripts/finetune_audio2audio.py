@@ -721,7 +721,9 @@ def save_outputs(mula, cond_module: AudioConditioningModule) -> None:
     print(f"AudioConditioningModule → {OUTPUT_COND_DIR}")
 
     # Upload conditioning module to the path generate_audio2audio.py expects
-    _gcs_upload(str(OUTPUT_COND_DIR), GCS_AUDIO_COND)
+    subprocess.run(
+        ["gsutil", "cp", str(OUTPUT_COND_DIR / "module.pt"), f"{GCS_AUDIO_COND}/module.pt"],
+        check=True)
     print(f"Uploaded conditioning  → {GCS_AUDIO_COND}")
 
     # Upload LoRA adapter to latest/adapter so generate_audio2audio.py can load it

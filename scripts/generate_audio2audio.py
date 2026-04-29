@@ -273,7 +273,8 @@ def load_conditioning_module(pipe: HeartMuLaGenPipeline) -> AudioConditioningMod
 
     if _gcs_dir_exists(GCS_AUDIO_COND):
         print(f"Loading trained AudioConditioningModule from {GCS_AUDIO_COND}…")
-        _gcs_cp(GCS_AUDIO_COND, str(CKPT_DIR) + "/")
+        local_cond.mkdir(parents=True, exist_ok=True)
+        _gcs_download(f"{GCS_AUDIO_COND}/module.pt", str(weights_file))
         module.load_state_dict(torch.load(str(weights_file), map_location=DEVICE))
         print("  Conditioning module loaded.")
     else:

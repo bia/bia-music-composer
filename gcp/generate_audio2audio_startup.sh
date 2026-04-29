@@ -19,17 +19,20 @@ TEMPERATURE=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/TEMPERATURE")
 CFG_SCALE=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/CFG_SCALE")
 DOCKER_IMAGE=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/DOCKER_IMAGE")
 GCS_TAGS_FILE=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/GCS_TAGS_FILE" || echo "")
-AUDIO_ENCODER_MODEL=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/AUDIO_ENCODER_MODEL" || echo "microsoft/wavlm-base")
-NUM_PREFIX_TOKENS=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/NUM_PREFIX_TOKENS" || echo "32")
+AUDIO_ENCODER_MODEL=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/AUDIO_ENCODER_MODEL" || echo "m-a-p/MERT-v1-95M")
+NUM_PREFIX_TOKENS=$(curl -sf -H "$METADATA_HEADER" "$METADATA_URL/NUM_PREFIX_TOKENS" || echo "64")
 
-echo "--- Installing Docker ---"
+echo "--- Ensuring Docker is available ---"
 if ! command -v docker &> /dev/null; then
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sh get-docker.sh
+    for attempt in 1 2 3; do
+        echo "  Docker install attempt $attempt..."
+        curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh && break
+        sleep 15
+    done
 fi
 
 echo "--- Configuring nvidia-container-toolkit for Docker ---"
-nvidia-ctk runtime configure --runtime=docker
+nvidia-ctk runtime configure --runtime=docker 2>/dev/null || true
 systemctl restart docker
 sleep 5
 

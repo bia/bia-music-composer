@@ -26,8 +26,9 @@ __pycache__/
 out/
 temp/
 
-# Ignore local script files
+# Ignore local script files (except the startup script bundled into the UI image)
 gcp/
+!gcp/generate_audio2audio_startup.sh
 
 # Ignore root project files
 .gitignore

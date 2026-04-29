@@ -21,7 +21,7 @@ REGION="${DOCKER_REGION:-europe-west6}"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/heartmula-3b/${SERVICE_NAME}:latest"
 
 echo "--- Building UI image ---"
-docker build -f ui/Dockerfile -t "$IMAGE" .
+docker build --platform linux/amd64 -f ui/Dockerfile -t "$IMAGE" .
 
 echo "--- Pushing to Artifact Registry ---"
 docker push "$IMAGE"
