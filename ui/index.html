@@ -610,18 +610,23 @@ updateGenerateBtn();
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
+    const ageMs = data.started_at
+      ? Date.now() - new Date(data.started_at).getTime()
+      : Infinity;
+    const stale = ageMs > 35 * 60 * 1000; // >35 min without completing → assume failed
+
     if (data.status === 'complete' && data.outputs && data.outputs.length) {
       showStatus(data.message, '', { success: true, spin: false });
       renderOutputs(data.outputs);
-    } else if (data.status === 'generating' || data.status === 'launching') {
-      elapsedSeconds = data.started_at
-        ? Math.floor((Date.now() - new Date(data.started_at).getTime()) / 1000)
-        : 0;
+    } else if ((data.status === 'generating' || data.status === 'launching') && !stale) {
+      elapsedSeconds = Math.floor(ageMs / 1000);
       showStatus(data.message, formatElapsed(elapsedSeconds), { spin: true });
       generateBtn.disabled = true;
       generateBtn.textContent = 'Generating…';
       startElapsed();
       startPolling();
+    } else if (stale || data.status === 'error') {
+      await fetch('/api/reset', { method: 'POST' });
     }
   } catch (_) {}
 })();
