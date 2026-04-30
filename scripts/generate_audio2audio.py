@@ -462,7 +462,18 @@ def main() -> None:
         if tags_path:
             print(f"  [annotate] tags   → {tags_path}")
         if lyrics_path:
-            print(f"  [annotate] lyrics → {lyrics_path}")
+            # Prepend [Intro] so the model generates an instrumental section
+            # before the vocals enter — without this the model opens on bar one
+            # singing the first lyric line with no backing.
+            content = Path(lyrics_path).read_text().strip()
+            if content and not content.startswith("[Intro]"):
+                intro_path = Path("./data/tmp/lyrics_with_intro.txt")
+                intro_path.parent.mkdir(parents=True, exist_ok=True)
+                intro_path.write_text(f"[Intro]\n\n{content}\n")
+                lyrics_path = intro_path
+                print(f"  [annotate] lyrics → {lyrics_path}  (instrumental [Intro] prepended)")
+            else:
+                print(f"  [annotate] lyrics → {lyrics_path}")
             gcs_lyrics_dest = f"{GCS_OUTPUT_PATH}/lyrics_input.txt"
             subprocess.run(["gsutil", "cp", str(lyrics_path), gcs_lyrics_dest], check=False)
             print(f"  [annotate] lyrics uploaded → {gcs_lyrics_dest}")
