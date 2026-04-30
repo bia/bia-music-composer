@@ -136,13 +136,18 @@ class AudioConditioningModule(nn.Module):
 
 # ── PrefixBackbone — matches finetune_audio2audio.py training exactly ─────────
 #
-# During training PrefixBackbone prepends P learned tokens to the hidden-state
-# sequence so the backbone attends over them via its own attention layers.
-# Using an additive-bias hook at inference time was a different operation and
-# the LoRA never saw it, so conditioning was silently ignored.
+# During training PrefixBackbone prepends P prefix tokens to the hidden-state
+# sequence so every attention layer can attend over them.
 #
-# We disable KV-cache (same as training) so every forward call sees the full
-# growing sequence.  Generation is O(T²) rather than O(T) but correct.
+# At inference HeartMuLa's autoregressive loop has two phases:
+#   Prefill  — backbone sees the full embedded prompt (S > 1 tokens at once).
+#              We prepend prefix here; the KV cache stores the P prefix entries.
+#   Decode   — backbone sees one new token at a time (S = 1).
+#              We skip prepending; the prefix is already in the KV cache and
+#              every new token attends to it naturally.
+#
+# This avoids the input_pos / RoPE shape mismatch that occurs when prefix tokens
+# are prepended to single-token decode steps without adjusting positional indices.
 
 class PrefixBackbone(nn.Module):
     """Wraps backbone to prepend conditioning prefix — identical to training."""
@@ -165,6 +170,12 @@ class PrefixBackbone(nn.Module):
 
         B, S, D = h.shape
         P = self._P
+
+        # Decode step: single token — prefix already in KV cache, skip prepend
+        if S == 1:
+            return self.backbone(h, mask=mask, **kwargs)
+
+        # Prefill: prepend prefix so it enters the KV cache
         prefix = self.prefix.expand(B, -1, -1).to(h.dtype)
         h_aug = torch.cat([prefix, h], dim=1)  # (B, P+S, D)
 
@@ -182,14 +193,6 @@ class PrefixBackbone(nn.Module):
             return out[:, P:, :]
         main = out[0][:, P:, :]
         return (main,) + out[1:]
-
-
-def _disable_backbone_caches(mula) -> None:
-    for module in mula.backbone.modules():
-        if hasattr(module, "kv_cache"):
-            module.kv_cache = None
-    if hasattr(mula.backbone, "_validate_inputs"):
-        mula.backbone._validate_inputs = lambda *a, **kw: None
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -344,7 +347,6 @@ def extract_wavlm_features(wavlm, wav_path: str) -> torch.Tensor:
 # ── 6. Install prefix conditioning into backbone ──────────────────────────────
 
 def install_prefix_backbone(pipe: HeartMuLaGenPipeline, prefix: torch.Tensor) -> None:
-    _disable_backbone_caches(pipe.mula)
     prefix_backbone = PrefixBackbone(pipe.mula.backbone)
     pipe.mula.backbone = prefix_backbone
     prefix_backbone.set_prefix(prefix)
