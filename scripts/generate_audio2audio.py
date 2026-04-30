@@ -202,6 +202,10 @@ def _gcs_cp(src: str, dst: str) -> None:
     subprocess.run(["gsutil", "-m", "cp", "-r", src, dst], check=True)
 
 
+def _gcs_download(src: str, dst: str) -> None:
+    subprocess.run(["gsutil", "-m", "cp", src, dst], check=True)
+
+
 # ── 1. Download base model checkpoints ────────────────────────────────────────
 
 def download_checkpoints() -> None:
