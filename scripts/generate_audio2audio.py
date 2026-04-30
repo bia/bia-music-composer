@@ -356,9 +356,11 @@ def generate_clip(pipe, input_wav, idx, tags_path=None, lyrics_path=None) -> dic
             lyrics_path = tmp / "lyrics.txt"
             lyrics_path.write_text("")
 
+    # Do not pass reference_audio to HeartMuLa's own conditioner — it encodes
+    # the raw audio structure (including vocal onset) and overrides both the
+    # [Intro] lyrics marker and our MERT additive-bias conditioning.
+    # Audio character is carried exclusively via the MERT prefix hook.
     inputs = {"tags": str(tags_path), "lyrics": str(lyrics_path)}
-    if input_wav:
-        inputs["reference_audio"] = input_wav
 
     try:
         model_inputs = pipe.preprocess(inputs, cfg_scale=CFG_SCALE)
