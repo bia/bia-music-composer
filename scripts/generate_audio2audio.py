@@ -134,65 +134,30 @@ class AudioConditioningModule(nn.Module):
         return (x + pos.unsqueeze(0)).to(DTYPE)                          # (1, P, backbone_dim)
 
 
-# ── PrefixBackbone — matches finetune_audio2audio.py training exactly ─────────
+# ── Prefix conditioning via forward pre-hook ──────────────────────────────────
 #
-# During training PrefixBackbone prepends P prefix tokens to the hidden-state
-# sequence so every attention layer can attend over them.
+# PrefixBackbone (prepend + attend) crashes HeartMuLa's autoregressive loop
+# because the pipeline's internal input_pos / RoPE accounting doesn't expect
+# the sequence length to grow.  Instead we pool the P prefix vectors to a
+# single global conditioning vector and add it as an additive bias to every
+# backbone hidden-state call.  This is compatible with KV-cache decoding and
+# avoids any sequence-length change.
 #
-# At inference HeartMuLa's autoregressive loop has two phases:
-#   Prefill  — backbone sees the full embedded prompt (S > 1 tokens at once).
-#              We prepend prefix here; the KV cache stores the P prefix entries.
-#   Decode   — backbone sees one new token at a time (S = 1).
-#              We skip prepending; the prefix is already in the KV cache and
-#              every new token attends to it naturally.
-#
-# This avoids the input_pos / RoPE shape mismatch that occurs when prefix tokens
-# are prepended to single-token decode steps without adjusting positional indices.
+# Note: the LoRA was trained with PrefixBackbone, so there is a train/inference
+# mismatch.  Proper fix: re-train finetune_audio2audio.py with this same hook
+# so the LoRA learns to use the additive bias signal.
 
-class PrefixBackbone(nn.Module):
-    """Wraps backbone to prepend conditioning prefix — identical to training."""
+def _make_prefix_hook(prefix: torch.Tensor):
+    """Return a forward pre-hook that adds pooled MERT conditioning to h."""
+    cond = prefix.mean(dim=1, keepdim=True).detach()  # (1, 1, D)
 
-    def __init__(self, backbone: nn.Module):
-        super().__init__()
-        self.backbone = backbone
-        self.prefix: torch.Tensor | None = None
+    def pre_hook(module, args):
+        if not args or not isinstance(args[0], torch.Tensor) or args[0].dim() != 3:
+            return args
+        h = args[0]
+        return (h + cond.expand(h.shape[0], h.shape[1], -1).to(h.dtype),) + args[1:]
 
-    @property
-    def _P(self) -> int:
-        return self.prefix.shape[1] if self.prefix is not None else 0
-
-    def set_prefix(self, prefix: torch.Tensor) -> None:
-        self.prefix = prefix  # (1, P, D)
-
-    def forward(self, h: torch.Tensor, mask=None, **kwargs):
-        if self.prefix is None:
-            return self.backbone(h, mask=mask, **kwargs)
-
-        B, S, D = h.shape
-        P = self._P
-
-        # Decode step: single token — prefix already in KV cache, skip prepend
-        if S == 1:
-            return self.backbone(h, mask=mask, **kwargs)
-
-        # Prefill: prepend prefix so it enters the KV cache
-        prefix = self.prefix.expand(B, -1, -1).to(h.dtype)
-        h_aug = torch.cat([prefix, h], dim=1)  # (B, P+S, D)
-
-        if mask is not None and mask.dim() == 3:
-            new_S = P + S
-            new_mask = torch.zeros(B, new_S, new_S, dtype=mask.dtype, device=mask.device)
-            new_mask[:, :P, :P] = True
-            new_mask[:, P:, :P] = True
-            new_mask[:, P:, P:] = mask
-            mask = new_mask
-
-        out = self.backbone(h_aug, mask=mask, **kwargs)
-
-        if isinstance(out, torch.Tensor):
-            return out[:, P:, :]
-        main = out[0][:, P:, :]
-        return (main,) + out[1:]
+    return pre_hook
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -347,9 +312,7 @@ def extract_wavlm_features(wavlm, wav_path: str) -> torch.Tensor:
 # ── 6. Install prefix conditioning into backbone ──────────────────────────────
 
 def install_prefix_backbone(pipe: HeartMuLaGenPipeline, prefix: torch.Tensor) -> None:
-    prefix_backbone = PrefixBackbone(pipe.mula.backbone)
-    pipe.mula.backbone = prefix_backbone
-    prefix_backbone.set_prefix(prefix)
+    pipe.mula.backbone.register_forward_pre_hook(_make_prefix_hook(prefix))
 
 
 # ── 7. Resolve input / tags ────────────────────────────────────────────────────
