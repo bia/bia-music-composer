@@ -66,7 +66,7 @@ MAX_AUDIO_MS             = int(os.getenv("MAX_AUDIO_MS",       "30000"))
 TEMPERATURE              = float(os.getenv("TEMPERATURE",      "1.0"))
 CFG_SCALE                = float(os.getenv("CFG_SCALE",        "3.0"))
 AUDIO_ENCODER_MODEL              = os.getenv("AUDIO_ENCODER_MODEL",            "m-a-p/MERT-v1-95M")
-NUM_PREFIX_TOKENS        = int(os.getenv("NUM_PREFIX_TOKENS",  "32"))
+NUM_PREFIX_TOKENS        = int(os.getenv("NUM_PREFIX_TOKENS",  "64"))
 
 CKPT_DIR = Path("./ckpt")
 OUT_DIR  = Path("./out/generated")
@@ -134,34 +134,62 @@ class AudioConditioningModule(nn.Module):
         return (x + pos.unsqueeze(0)).to(DTYPE)                          # (1, P, backbone_dim)
 
 
-# ── Prefix conditioning via additive bias hook ────────────────────────────────
+# ── PrefixBackbone — matches finetune_audio2audio.py training exactly ─────────
 #
-# HeartMuLa inference uses generate_frame → backbone(h, input_pos=..., mask=...)
-# with KV-cache position tracking and RoPE.  Prepending tokens to the sequence
-# changes its length while input_pos stays fixed, breaking RoPE.
+# During training PrefixBackbone prepends P learned tokens to the hidden-state
+# sequence so the backbone attends over them via its own attention layers.
+# Using an additive-bias hook at inference time was a different operation and
+# the LoRA never saw it, so conditioning was silently ignored.
 #
-# Instead: pool the P prefix tokens to a single global conditioning vector and
-# add it to every hidden-state position at each backbone forward call.
-# This carries the WavLM melodic information without touching sequence length,
-# input_pos, RoPE, or KV cache.
+# We disable KV-cache (same as training) so every forward call sees the full
+# growing sequence.  Generation is O(T²) rather than O(T) but correct.
 
-def _make_prefix_hooks(prefix: torch.Tensor):
-    """
-    Return (pre_hook,) that adds global WavLM conditioning to backbone hidden states.
+class PrefixBackbone(nn.Module):
+    """Wraps backbone to prepend conditioning prefix — identical to training."""
 
-    prefix : (1, P, D) — pooled to (1, 1, D) and broadcast-added to h.
-    """
-    # Pool P prefix tokens → single global conditioning vector (1, 1, D)
-    cond = prefix.mean(dim=1, keepdim=True).detach()  # (1, 1, D)
+    def __init__(self, backbone: nn.Module):
+        super().__init__()
+        self.backbone = backbone
+        self.prefix: torch.Tensor | None = None
 
-    def pre_hook(module, args):
-        if not args or not isinstance(args[0], torch.Tensor) or args[0].dim() != 3:
-            return args
-        h = args[0]
-        bias = cond.expand(h.shape[0], h.shape[1], -1).to(h.dtype)
-        return (h + bias,) + args[1:]
+    @property
+    def _P(self) -> int:
+        return self.prefix.shape[1] if self.prefix is not None else 0
 
-    return (pre_hook,)
+    def set_prefix(self, prefix: torch.Tensor) -> None:
+        self.prefix = prefix  # (1, P, D)
+
+    def forward(self, h: torch.Tensor, mask=None, **kwargs):
+        if self.prefix is None:
+            return self.backbone(h, mask=mask, **kwargs)
+
+        B, S, D = h.shape
+        P = self._P
+        prefix = self.prefix.expand(B, -1, -1).to(h.dtype)
+        h_aug = torch.cat([prefix, h], dim=1)  # (B, P+S, D)
+
+        if mask is not None and mask.dim() == 3:
+            new_S = P + S
+            new_mask = torch.zeros(B, new_S, new_S, dtype=mask.dtype, device=mask.device)
+            new_mask[:, :P, :P] = True
+            new_mask[:, P:, :P] = True
+            new_mask[:, P:, P:] = mask
+            mask = new_mask
+
+        out = self.backbone(h_aug, mask=mask, **kwargs)
+
+        if isinstance(out, torch.Tensor):
+            return out[:, P:, :]
+        main = out[0][:, P:, :]
+        return (main,) + out[1:]
+
+
+def _disable_backbone_caches(mula) -> None:
+    for module in mula.backbone.modules():
+        if hasattr(module, "kv_cache"):
+            module.kv_cache = None
+    if hasattr(mula.backbone, "_validate_inputs"):
+        mula.backbone._validate_inputs = lambda *a, **kw: None
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -309,11 +337,13 @@ def extract_wavlm_features(wavlm, wav_path: str) -> torch.Tensor:
     return features
 
 
-# ── 6. Install prefix conditioning into backbone via hooks ────────────────────
+# ── 6. Install prefix conditioning into backbone ──────────────────────────────
 
 def install_prefix_backbone(pipe: HeartMuLaGenPipeline, prefix: torch.Tensor) -> None:
-    (pre_hook,) = _make_prefix_hooks(prefix)
-    pipe.mula.backbone.register_forward_pre_hook(pre_hook)
+    _disable_backbone_caches(pipe.mula)
+    prefix_backbone = PrefixBackbone(pipe.mula.backbone)
+    pipe.mula.backbone = prefix_backbone
+    prefix_backbone.set_prefix(prefix)
 
 
 # ── 7. Resolve input / tags ────────────────────────────────────────────────────

@@ -128,7 +128,7 @@ def _launch_vm(
         run_mode     = _cfg("RUN_MODE", "test")
         docker_image = _cfg("DOCKER_IMAGE")
         audio_encoder_model  = _cfg("AUDIO_ENCODER_MODEL", "microsoft/wavlm-base")
-        num_prefix   = _cfg("NUM_PREFIX_TOKENS", "32")
+        num_prefix   = _cfg("NUM_PREFIX_TOKENS", "64")
         max_audio_ms = _cfg("MAX_AUDIO_MS", "30000")
         vm_zone      = _cfg("VM_ZONE", "europe-west1-b")
         instance     = "heartmula-generate-a2a"
